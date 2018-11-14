@@ -881,7 +881,7 @@ class MainWindow(MainWindowUi):
 
         self.is_error = True
         self.can_refresh_details = False
-        time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
+        time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
         self.update_title_statusbar_tray(self.room_icon, u'服务器心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
         
         time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
@@ -897,7 +897,7 @@ class MainWindow(MainWindowUi):
         self.thread_live_timer.stop()
         self.is_error = True
         self.can_refresh_details = False
-        time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
+        time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
         self.update_title_statusbar_tray(self.room_icon, u'程序内部心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
         
         time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
