@@ -4,7 +4,7 @@
 # filename: douyu_sp.py
 # version: 1.0.0
 # date: 2018-04-06
-# last date: 2018-10-28
+# last date: 2018-11-15
 # os: windows
 
 import json
@@ -22,7 +22,7 @@ import webbrowser
 from queue import Queue
 from threading import Thread, Event
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QHBoxLayout, QWidget, QTextEdit, QPushButton, QCheckBox
 
 from douyu_client_gui import DYApplication
@@ -43,12 +43,14 @@ class DisplayWindowSP(MainWindow):
         super(DisplayWindowSP, self).__init__()
         from douyu_client_gui import CHINESE_SIZE
         self.connect_widget = QWidget(self)
+        self.connect_button = QPushButton(u'连接', self)
         self.room_id_list_config_button = QPushButton(u'设置监视的直播间列表', self)
         self.anchor_blacklist_config_button = QPushButton(u'设置主播黑名单', self)
         self.anchor_blacklist_check = QCheckBox(u'启用主播黑名单', self)
         self.room_id_list_config_widget = TextEditWidget(self)
         self.anchor_blacklist_config_widget = TextEditWidget(self)
 
+        self.connect_button.setCursor(POINT_HAND_CURSOR)
         self.room_id_list_config_button.setCursor(POINT_HAND_CURSOR)
         self.anchor_blacklist_config_button.setCursor(POINT_HAND_CURSOR)
         self.room_id_list_config_button.setFixedWidth(CHINESE_SIZE.width() * 12)
@@ -57,8 +59,6 @@ class DisplayWindowSP(MainWindow):
         self.anchor_blacklist_config_widget.setWindowTitle(u'设置主播黑名单')
         
         self.topbar_widget.roomid_enter.setText('000000')
-        self.topbar_widget.roomid_enter.setDisabled(True)
-        self.topbar_widget.connect_danmu.setParent(self.connect_widget)
         self.topbar_widget.hide()
         self.tab_window.removeTab(0)
         self.tab_window.removeTab(1)
@@ -68,7 +68,7 @@ class DisplayWindowSP(MainWindow):
         connect_layout.addWidget(self.anchor_blacklist_config_button)
         connect_layout.addStretch(1)
         connect_layout.addWidget(self.room_id_list_config_button)
-        connect_layout.addWidget(self.topbar_widget.connect_danmu)
+        connect_layout.addWidget(self.connect_button)
         connect_layout.setContentsMargins(10, 10, 10, 0)
         self.connect_widget.setLayout(connect_layout)
         self.connect_widget.resize(connect_layout.sizeHint())        
@@ -79,18 +79,24 @@ class DisplayWindowSP(MainWindow):
         self.room_id_list = []    # 连接的直播间号列表
         self.anchor_blacklist_enabled = False
         self.anchor_blacklist = []    # 主播黑名单
-        self.queue_rid_order = {}
-        self.queue_server_data = {}
-        self.queue_message_data = {}
-        self.queue_order_except_1 = {}
-        self.queue_order_except_2 = {}
         self.dsp_temp = {}    # 广播消息显示缓存
+        
+        self.queue_rid_order_sp = {}
+        self.queue_server_data_sp = {}
+        self.queue_message_data_sp = {}
+        self.queue_order_except_1_sp = {}
+        self.queue_order_except_2_sp = {}        
+        self.restart_sp = {}
+        self.keeplive_timer_sp = {}
 
         self.config_sp_file = os.path.join(self.room_config_path, 'config_sp')
         self.browser_list_file = os.path.join(PROGRAM_CONFIG_FOLDER, 'BrowserList')
         self.browser_list = self.load_browser_list()
         self.update_details_timer.timeout.disconnect()
         self.config_widget.save_config_button.clicked.connect(self.load_browser_event)
+        self.connect_button.clicked.connect(self.connect_event_sp)
+        self.tray_icon.action_connect.triggered.disconnect()
+        self.tray_icon.action_connect.triggered.connect(self.connect_event_sp)
         self.room_id_list_config_button.clicked.connect(self.room_id_list_config_button_event)
         self.anchor_blacklist_config_button.clicked.connect(self.anchor_blacklist_config_button_event)
         self.anchor_blacklist_check.clicked.connect(self.anchor_blacklist_check_event)
@@ -100,72 +106,93 @@ class DisplayWindowSP(MainWindow):
         self.anchor_blacklist_config_widget.cancel_button.clicked.connect(self.anchor_blacklist_config_widget.hide)
 
         self.load_config_sp()
+        self.load_room_config()    # 加载直播间设置
+        self.start_record_message()    # 开启记录消息线程
 
-    def connect_event(self):    # 连接按键的事件处理器
+    def connect_event_sp(self):    # 连接按键的事件处理器
         try:
-            self.room_id = '000000'
             self.connected_room_id_list = [i for i in self.room_id_list]
             if self.connected_room_id_list:
-                self.connect_triggered = True
-                self.topbar_widget.connect_danmu.setDisabled(True)         
-
-                self.gift_dict_saved = self.load_gift_dict()    # 加载保存在文件中的礼物ID与名称
-                self.room_gift.update(self.gift_dict_saved)
-                self.load_room_config()    # 加载直播间设置
-
-                self.queue_rid_order = {}
-                self.queue_server_data = {}
-                self.queue_message_data = {}
-                self.queue_order_except_1 = {}
-                self.queue_order_except_2 = {}
+                self.queue_rid_order_sp = {}
+                self.queue_server_data_sp = {}
+                self.queue_message_data_sp = {}
+                self.queue_order_except_1_sp = {}
+                self.queue_order_except_2_sp = {}
                 self.dsp_temp = {}
+                self.restart_sp = {}
+                self.keeplive_timer_sp = {}
                 
-                for roomid in self.connected_room_id_list:                        
-                    # 定义所需队列
-                    self.queue_rid_order[roomid] = Queue()
-                    self.queue_server_data[roomid] = Queue()
-                    self.queue_message_data[roomid] = Queue()
-                    self.queue_order_except_1[roomid] = Queue()
-                    self.queue_order_except_2[roomid] = Queue()
+                for roomid in self.connected_room_id_list:
                     self.dsp_temp[roomid] = {}
-                    
-                    self.queue_rid_order[roomid].put(roomid, 1)    # 直播间号发送给接收数据线程
-                    receive_server = GetDanmuServerData(
-                        self.queue_server_data[roomid],
-                        self.queue_rid_order[roomid],
-                        self.queue_order_except_1[roomid],
-                        self.set_danmu_server,
-                        self.set_danmu_port,
-                        self.set_danmu_group)    # 接收数据线程，心跳线程
-                    process_server = ProcessDanmuServerDataSP(
-                        self.queue_server_data[roomid],
-                        self.queue_message_data[roomid],
-                        self.queue_order_except_1[roomid],
-                        self.queue_order_except_2[roomid])    # 处理数据线程
-                    # 启动各线程
-                    self.start_display_message(roomid)
-                    receive_server.thread_start()
-                    process_server.thread_start()
-                #self.start_get_details()
+                    self.restart_sp[roomid] = False
+                    self.keeplive_timer_sp[roomid] = QTimer(self)                   
+                    self.setup_timeout_event(roomid)
+                    self.setup_connect_threads(roomid)
+
+                self.connect_button.setText(u'断开')
+                self.tray_icon.action_connect.setText(u'断开')
+                self.connect_button.clicked.disconnect()
+                self.tray_icon.action_connect.triggered.disconnect()
+                self.connect_button.clicked.connect(self.disconnect_event_sp)
+                self.tray_icon.action_connect.triggered.connect(self.disconnect_event_sp)
+            else:
+                self.show_connect_error(u'监视的直播间列表为空', '')
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
 
-    def disconnect_event(self):    # 断开按键的事件处理器
+    def setup_timeout_event(self, roomid):
+        self.keeplive_timer_sp[roomid].timeout.connect(
+            lambda: self.keeplive_timeout_event_sp(roomid))
+    
+    def setup_connect_threads(self, roomid):
+        try:
+            self.queue_rid_order_sp[roomid] = Queue()
+            self.queue_server_data_sp[roomid] = Queue()
+            self.queue_message_data_sp[roomid] = Queue()
+            self.queue_order_except_1_sp[roomid] = Queue()
+            self.queue_order_except_2_sp[roomid] = Queue()
+            
+            self.queue_rid_order_sp[roomid].put(roomid, 1)    # 直播间号发送给接收数据线程
+            receive_server = GetDanmuServerData(
+                self.queue_server_data_sp[roomid],
+                self.queue_rid_order_sp[roomid],
+                self.queue_order_except_1_sp[roomid],
+                self.set_danmu_server,
+                self.set_danmu_port,
+                self.set_danmu_group)    # 接收数据线程，心跳线程
+            process_server = ProcessDanmuServerDataSP(
+                self.queue_server_data_sp[roomid],
+                self.queue_message_data_sp[roomid],
+                self.queue_order_except_1_sp[roomid],
+                self.queue_order_except_2_sp[roomid])    # 处理数据线程
+            # 启动各线程
+            self.start_display_message(roomid)
+            receive_server.thread_start()
+            process_server.thread_start()
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
+    def disconnect_event_sp(self):    # 断开按键的事件处理器
         self.event_display.set()
-        self.connect_triggered = False
         self.save_room_config()    # 保存直播间设置
-        self.topbar_widget.connect_danmu.setDisabled(True)
         for roomid in self.connected_room_id_list:
-            self.queue_rid_order[roomid].put('close', 1)    # 发送结束消息给接收数据线程
+            self.queue_rid_order_sp[roomid].put('close', 1)    # 发送结束消息给接收数据线程
+        self.connect_button.setText(u'连接')
+        self.tray_icon.action_connect.setText(u'连接')    
+        self.connect_button.clicked.disconnect()
+        self.tray_icon.action_connect.triggered.disconnect()
+        self.connect_button.clicked.connect(self.connect_event_sp)
+        self.tray_icon.action_connect.triggered.connect(self.connect_event_sp)        
         
     def start_display_message(self, roomid):    # 创建并开启触发显示线程
         self.event_display.set()
         self.run_display_message = True
         thread_display = Thread(target=self.thread_display_message,
                                 args=(roomid,
-                                      self.queue_message_data[roomid],
-                                      self.queue_order_except_2[roomid]))
+                                      self.queue_message_data_sp[roomid],
+                                      self.queue_order_except_2_sp[roomid]))
         thread_display.setDaemon(True)
         thread_display.start()
 
@@ -211,8 +238,6 @@ class DisplayWindowSP(MainWindow):
     def process_message_event(self, mdata):    # 处理显示消息，由触发显示线程触发        
         try:
             data = mdata['data']
-            if 'time' in data:
-                time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
             #if data['type'] in self.danmu_message_type:
             #    self.display_danmu_message(data)
             #elif data['type'] in self.gift_message_type:
@@ -226,27 +251,19 @@ class DisplayWindowSP(MainWindow):
             elif data['type'] == 'rss':
                 self.display_rss_message(data)
             elif data['type'] == 'loginres':
-                self.process_loginres_message(data)
-                self.update_details_timer.stop()
-                dsp_str = u'%s 直播间【%s】连接成功' % (time_str, data['rid'])
-                self.display_record_message(dsp_str)
+                self.process_loginres_message_sp(mdata)                
             elif data['type'] in ('keeplive', 'live'):
-                self.process_keeplive_message(data)
+                self.process_keeplive_message_sp(mdata)
             elif data['type'] in ('exception', 'error'):
-                self.process_error_message(mdata)
-
+                self.process_error_message_sp(mdata)
             elif data['type'] == 'disconnected':
-                self.process_disconnected_message(data)
-                dsp_str = u'%s 直播间【%s】已断开连接' % (time_str, data['rid'])
-                self.display_record_message(dsp_str)
+                self.process_disconnected_message_sp(mdata)
+
 
             # 设置了记录消息，则将数据发送给记录消息线程
             if (self.set_record and data['type'] in self.record_type_list and
                 (data['type'] not in self.broadcast_message_type or
                  (data['type'] in self.broadcast_message_type and not exist))):
-                if self.new_record:
-                    self.new_record = False
-                    self.start_record_message()    # 开启记录消息线程
                 self.queue_record_data.put(data, 1)
         except Exception as exc:
             exc_msg = exception_message(exc)
@@ -256,30 +273,88 @@ class DisplayWindowSP(MainWindow):
             self.event_display.set()
             pass
 
-    def process_error_message(self, mdata):    # 弹窗提醒错误消息和相应处理
+    def process_loginres_message_sp(self, mdata):    # 处理登录直播间成功的消息
+        try:
+            roomid = mdata['rid']
+            data = mdata['data']
+            time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
+            dsp_str = u'%s 直播间【%s】连接成功' % (time_str, data['rid'])
+            self.display_record_message(dsp_str)
+            time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
+            self.update_title_statusbar_tray(self.room_icon, u'已连接' + time_short)
+            self.keeplive_timer_sp[roomid].start(45000)    # 开启服务器心跳消息定时器，45秒内没接收到心跳消息就会重启连接
+
+            if self.connect_error_box:    # 自动关闭错误提示的弹窗
+                self.connect_error_box.set_duration(1)
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
+    def process_disconnected_message_sp(self, mdata):    # 处理断开连接的消息
+        try:
+            roomid = mdata['rid']
+            data = mdata['data']
+            time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
+            dsp_str = u'%s 直播间【%s】已断开连接' % (time_str, data['rid'])
+            self.display_record_message(dsp_str)
+            self.keeplive_timer_sp[roomid].stop()    # 停止服务器心跳定时器
+
+            if self.restart_sp[roomid]:    # 发生错误要自动重启后台线程                
+                self.restart_sp[roomid] = False
+                self.setup_connect_threads(roomid)
+                
+            else:    # 是正常断开连接
+                time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
+                self.update_title_statusbar_tray(self.room_icon, u'已断开连接' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
+
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+
+    def process_keeplive_message_sp(self, mdata):    # 处理心跳消息
+        roomid = mdata['rid']
+        data = mdata['data']        
+        if data['type'] == 'keeplive':
+            self.keeplive_timer_sp[roomid].stop()
+            self.keeplive_timer_sp[roomid].start(45000)    # 重置服务器心跳定时器45s
+
+    def keeplive_timeout_event_sp(self, roomid):    # 定时器的事件处理器：发生服务器心跳异常
+        try:
+            exc_msg = u'#服务器心跳异常(rid=%s)' % roomid
+            WARNING_LOGGER.warning(exc_msg)
+            self.keeplive_timer_sp[roomid].stop()
+
+            time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
+            self.update_title_statusbar_tray(self.room_icon, u'服务器心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
+
+            time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
+            msg_remind =  u'%s\n直播间【%s】服务器心跳异常' % (time_str, roomid)
+            self.show_connect_error(msg_remind, roomid)    # 弹窗提醒
+            dsp_str =  u'%s 直播间【%s】服务器心跳异常' % (time_str, roomid)
+            self.display_record_message(dsp_str)
+            self.restart_sp[roomid] = True
+            self.queue_rid_order_sp[roomid].put('close', 1)
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
+    def process_error_message_sp(self, mdata):    # 弹窗提醒错误消息和相应处理
+        roomid = mdata['rid']
         data = mdata['data']
-        self.is_error = True
-        self.can_refresh_details = False
         time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
-        #self.update_title_statusbar_tray(self.room_icon, data['reason'] + time_short)    # 设置窗体标题、状态栏、托盘图标说明
+        self.update_title_statusbar_tray(self.room_icon, data['reason'] + time_short)    # 设置窗体标题、状态栏、托盘图标说明
 
         time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
-        msg_remind = u'%s\n直播间【%s】%s' % (time_str, data['rid'], data['reason'])
-        self.show_connect_error(msg_remind, self.room_id)    # 弹窗提示错误
-        dsp_str = u'%s 直播间【%s】%s' % (time_str, data['rid'], data['reason'])
+        msg_remind = u'%s\n直播间【%s】%s' % (time_str, roomid, data['reason'])
+        self.show_connect_error(msg_remind, roomid)    # 弹窗提示错误
+        dsp_str = u'%s 直播间【%s】%s' % (time_str, roomid, data['reason'])
         self.display_record_message(dsp_str)
         
         if data['code'] in ['failed', 'timeout']:    # 网络断开或连接超时，处于重试状态
-            self.topbar_widget.connect_danmu.setText(u'断开')
-            self.tray_icon.action_connect.setText(u'断开(%s)' % self.room_id)
-            self.topbar_widget.connect_danmu.clicked.disconnect()    # 取消按键事件绑定
-            self.tray_icon.action_connect.triggered.disconnect()  
-            self.topbar_widget.connect_danmu.clicked.connect(self.disconnect_event)
-            self.tray_icon.action_connect.triggered.connect(self.disconnect_event)
-            self.topbar_widget.connect_danmu.setEnabled(True)
+            pass
         else:    # 发生其它错误导致需重启后台线程
-            self.restart = True    # 标志自动重启后台线程
-            self.disconnect_event()    # 触发断开连接事件处理器
+            self.restart_sp[roomid] = True    # 标志自动重启后台线程
+            self.queue_rid_order_sp[roomid].put('close', 1)    # 发送结束消息给接收数据线程
             
     def check_msg_showed(self, mdata):
         try:
@@ -370,8 +445,6 @@ class DisplayWindowSP(MainWindow):
                 
         text_html = self.get_display_text(data)
         self.display_record_message(text_html)
-        #self.update_details_timer.stop()
-        #self.update_details_timer.start(5000)    # 5秒后更新直播间详细信息
 
     def room_id_list_config_button_event(self):
         text = '\n'.join(self.room_id_list)
@@ -464,7 +537,25 @@ class DisplayWindowSP(MainWindow):
         except Exception as exc:
             exc_msg = exception_message(exc) + u'#保存特殊设置失败'
             ERROR_LOGGER.warning(exc_msg)            
-                
+
+    def quit_event(self, event=None):    # 完全退出程序
+        self.hide()
+        self.tray_icon.setVisible(False)
+        # 保存设置
+        self.save_user_config()
+        self.save_room_config()
+        # 停止所有后台线程
+        for roomid in self.connected_room_id_list:
+            self.queue_rid_order_sp[roomid].put('close', 1)
+        if self.queue_record_data:
+            self.run_record_message = False
+            self.queue_record_data.put({
+                'time': int(time.time()),
+                'type': 'close'
+            }, 1)
+        self.destroy()
+        sys.exit()
+        
     def show_gift_remind(self, message, roomid):
         self.gift_remind_box = MessageBoxSP(self, u'抢宝箱提醒', message, u'抢宝箱',
                                             u'算了', self.set_gift_remind_duration,

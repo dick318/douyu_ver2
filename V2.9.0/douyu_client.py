@@ -4,7 +4,7 @@
 # filename: douyu_client.py
 # version: 1.0.0
 # date: 2018-03-29
-# last date: 2018-11-13
+# last date: 2018-11-15
 # os: windows
 
 
@@ -68,7 +68,7 @@ from douyu_server_data_receive import GetDanmuServerData
 
 # 关于软件的说明
 ABOUT_SOFTWARE = (u'Design by 枫轩\n'
-                  u'当前版本：2.8.1(2018-11-13)\n'
+                  u'当前版本：2.9.0(2018-11-15)\n'
                   u'联系方式：990761629(QQ)')
 
 # 定义各文件夹和文件的名称
