@@ -166,21 +166,17 @@ class MainWindow(MainWindowUi):
 
         self.event_display = Event()    # 协调主UI线程中的显示程序与触发显示线程中的触发程序
         self.event_query = Event()    # 协调主UI线程中的显示程序与查询线程中的触发程序
-        self.receive_server_data = None    # 接收弹幕服务器数据线程
-        self.process_server_data = None    # 处理数据线程
         self.run_display_message = True    # 触发显示线程运行控制位
         self.run_get_details = True    # 获取直播间详细信息线程运行控制位
         self.run_record_message = True    # 记录数据线程运行控制位
 
         # 定义标志位
-        self.is_error = False    # 是否发生异常
-        self.restart = False    # 是否进行重启
-        self.is_connected = False    # 是否处于正常连接状态
-        self.connect_triggered = False    # 是否已触发连接
-        self.new_record = True    # 是否启动新的记录线程
+        self.flag_restart = False    # 是否进行重启
+        self.can_save_room_config = False    # 是否可保存直播间设置
+        self.flag_build_record_thread = True    # 是否启动新的记录线程
         self.can_refresh_details = True    # 是否能更新托盘的直播间信息
         self.can_change_config = True    # 是否处理配置变更信号
-        self.stop_query = False    # 是否停止查询
+        self.flag_stop_query = False    # 是否停止查询
 
         # 定义各文本显示框中显示消息的类型
         self.danmu_message_type = (
@@ -500,7 +496,7 @@ class MainWindow(MainWindowUi):
         try:
             self.room_id = self.topbar_widget.roomid_enter.text()    # 取直播间号
             if self.room_id:    # 判断直播间号是否正确
-                self.connect_triggered = True
+                self.can_save_room_config = True
                 self.topbar_widget.roomid_enter.setDisabled(True)    # 不可更改直播间号
                 self.topbar_widget.connect_danmu.setDisabled(True)         
 
@@ -516,17 +512,17 @@ class MainWindow(MainWindowUi):
                 self.queue_order_except_2 = Queue()
                 
                 self.queue_rid_order.put(self.room_id, 1)    # 直播间号发送给接收数据线程
-                self.receive_server_data = GetDanmuServerData(
+                receive_server_data = GetDanmuServerData(
                     self.queue_server_data, self.queue_rid_order,
                     self.queue_order_except_1, self.set_danmu_server,
                     self.set_danmu_port, self.set_danmu_group)    # 接收数据线程，心跳线程
-                self.process_server_data = ProcessDanmuServerData(
+                process_server_data = ProcessDanmuServerData(
                     self.queue_server_data, self.queue_message_data,
                     self.queue_order_except_1, self.queue_order_except_2)    # 处理数据线程
                 # 启动各线程
                 self.start_display_message()
-                self.receive_server_data.thread_start()
-                self.process_server_data.thread_start()
+                receive_server_data.thread_start()
+                process_server_data.thread_start()
                 self.start_get_details()
 
             else:
@@ -538,7 +534,7 @@ class MainWindow(MainWindowUi):
 
     def disconnect_event(self):    # 断开按键的事件处理器
         self.event_display.set()
-        self.connect_triggered = False
+        self.can_save_room_config = False
         self.save_room_config()    # 保存直播间设置
         self.topbar_widget.connect_danmu.setDisabled(True)
         self.queue_rid_order.put('close', 1)    # 发送结束消息给接收数据线程        
@@ -605,8 +601,8 @@ class MainWindow(MainWindowUi):
 
             # 设置了记录消息，则将数据发送给记录消息线程
             if self.set_record and data['type'] in self.record_type_list:
-                if self.new_record:
-                    self.new_record = False
+                if self.flag_build_record_thread:
+                    self.flag_build_record_thread = False
                     self.start_record_message()    # 开启记录消息线程
                 self.queue_record_data.put(data, 1)
         except Exception as exc:
@@ -619,20 +615,18 @@ class MainWindow(MainWindowUi):
 
     def process_disconnected_message(self, data):    # 处理断开连接的消息
         try:
-            self.is_error = False
             self.keeplive_timer.stop()    # 停止服务器心跳定时器
             self.thread_live_timer.stop()    # 停止程序内心跳定时器
             self.stop_get_details()    # 停止更新直播间信息线程
 
-            if self.restart:    # 发生错误要自动重启后台线程                
-                self.restart = False
+            if self.flag_restart:    # 发生错误要自动重启后台线程                
+                self.flag_restart = False
                 self.connect_event()    # 触发连接事件处理器
             else:    # 是正常断开连接
                 self.room_icon = self.default_icon
                 self.can_refresh_details = False
                 time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
                 self.update_title_statusbar_tray(self.room_icon, u'已断开连接' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
-                self.is_connected = False
                 self.last_title = ''
                 self.room_owner = ''
                 self.topbar_widget.connect_danmu.setText(u'连接')    # ‘断开’按钮更改为‘连接’按钮
@@ -666,7 +660,6 @@ class MainWindow(MainWindowUi):
 
             self.keeplive_timer.start(45000)    # 开启服务器心跳消息定时器，45秒内没接收到心跳消息就会重启连接
             self.thread_live_timer.start(20000)    # 开启程序内心跳消息定时器，20秒内没接收到心跳消息就会重启连接
-            self.is_connected = True    # 标志处于正常连接状态
             self.can_refresh_details = True
             self.update_details_timer.start(100)    # 登录成功，0.1秒后更新直播间详细信息
             
@@ -674,7 +667,7 @@ class MainWindow(MainWindowUi):
             # 避免两个记录线程同时修改同一个数据库导致异常
             if self.room_id != self.last_rid: 
                 self.last_rid = self.room_id                
-                self.new_record = True
+                self.flag_build_record_thread = True
                 if self.queue_record_data:
                     self.queue_record_data.put({
                         'time': int(time.time()),
@@ -696,7 +689,6 @@ class MainWindow(MainWindowUi):
             self.thread_live_timer.start(20000)    # 重置程序内心跳定时器20s        
 
     def process_error_message(self, data):    # 弹窗提醒错误消息和相应处理
-        self.is_error = True
         self.can_refresh_details = False
         time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
         self.update_title_statusbar_tray(self.room_icon, data['reason'] + time_short)    # 设置窗体标题、状态栏、托盘图标说明
@@ -713,7 +705,7 @@ class MainWindow(MainWindowUi):
             self.tray_icon.action_connect.triggered.connect(self.disconnect_event)
             self.topbar_widget.connect_danmu.setEnabled(True)
         else:    # 发生其它错误导致需重启后台线程
-            self.restart = True    # 标志自动重启后台线程
+            self.flag_restart = True    # 标志自动重启后台线程
             self.disconnect_event()    # 触发断开连接事件处理器
             
     def display_danmu_message(self, data):    # 在弹幕消息框中显示消息
@@ -879,7 +871,6 @@ class MainWindow(MainWindowUi):
         self.keeplive_timer.stop()
         self.thread_live_timer.stop()
 
-        self.is_error = True
         self.can_refresh_details = False
         time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
         self.update_title_statusbar_tray(self.room_icon, u'服务器心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
@@ -887,7 +878,7 @@ class MainWindow(MainWindowUi):
         time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
         msg_remind = time_error + u'\n服务器心跳异常'
         self.show_connect_error(msg_remind, self.room_id)    # 弹窗提醒
-        self.restart = True
+        self.flag_restart = True
         self.disconnect_event()    # 触发断开连接事件处理器
 
     def thread_live_timeout_event(self):    # 定时器的事件处理器：发生程序内心跳异常
@@ -895,7 +886,6 @@ class MainWindow(MainWindowUi):
         ERROR_LOGGER.error(exc_msg)
         self.keeplive_timer.stop()
         self.thread_live_timer.stop()
-        self.is_error = True
         self.can_refresh_details = False
         time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
         self.update_title_statusbar_tray(self.room_icon, u'程序内部心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
@@ -1440,7 +1430,7 @@ class MainWindow(MainWindowUi):
     def query_button_event(self):    # 查询按钮的事件处理器
         rid = self.record_widget.room_num.text()        
         if rid:
-            self.stop_query = False
+            self.flag_stop_query = False
             dbname = 'room_' + rid + '.db'    # 要查询的数据库名
             db_path = os.path.join(self.database_path, dbname)
             if os.path.exists(db_path):    # 数据库是否存在
@@ -1543,7 +1533,7 @@ class MainWindow(MainWindowUi):
                     if len(result_all) > max_result:
                         result_all = result_all[-max_result:]
                     for data_tuple in result_all:    # 逐一显示查询到的消息
-                        if self.stop_query:    # 是否中断显示查询结果
+                        if self.flag_stop_query:    # 是否中断显示查询结果
                             break
                         data_dict = {}
                         for i in range(len(key_tuple)):    # 将数据元组转换成相应的字典格式，以用于转换
@@ -1565,7 +1555,7 @@ class MainWindow(MainWindowUi):
                     'data': str(len(result_all))
                 })
                 for result in result_all:    # 逐一显示查询到的用户信息
-                    if self.stop_query:    # 是否中断显示查询结果
+                    if self.flag_stop_query:    # 是否中断显示查询结果
                         break
                     info_str = (u'%s<p>ID: %s%s名称: %s</p>' %
                                 (self.message_css, result[0], '&nbsp;'*8, result[1]))
@@ -1607,7 +1597,7 @@ class MainWindow(MainWindowUi):
                      ('table_bgbc', 'sid', 'sn')]      
         result_list = []
         for args in args_list:    # 逐一查询各表
-            if self.stop_query:    # 是否中断查询
+            if self.flag_stop_query:    # 是否中断查询
                 break
             fields = '%s, %s' % (args[1], args[2])    # 要获取的字段
             cond = {}    # 查询条件
@@ -1618,7 +1608,7 @@ class MainWindow(MainWindowUi):
                 cond[args[2]] = cond.pop('nn')
             result_all = database.query_all(args[0], fields, cond)
             for result in result_all:    # 去除重复的信息
-                if self.stop_query:    # 是否中断查询
+                if self.flag_stop_query:    # 是否中断查询
                     break
                 if result and result not in result_list:
                     result_list.append(result)
@@ -1634,7 +1624,7 @@ class MainWindow(MainWindowUi):
                 self.display_record_message(data_recv['data'])
             elif data_recv['type'] == 'finish':
                 self.record_widget.query_button.setEnabled(True)
-                self.stop_query = False
+                self.flag_stop_query = False
             elif data_recv['type'] == 'error':
                 self.show_query_error(data_recv['data'])
         except Exception as exc:
@@ -1661,7 +1651,7 @@ class MainWindow(MainWindowUi):
 
     def reset_button_event(self):    # 重置按键的事件处理器
         self.record_widget.room_num.setText(self.room_id)
-        self.stop_query = True    # 停止查询
+        self.flag_stop_query = True    # 停止查询
 
     # 设置窗体相关事件处理器和方法
     def load_user_config(self):    # 加载用户设置，不存在则是加载默认设置
@@ -2069,7 +2059,7 @@ class MainWindow(MainWindowUi):
 
     def save_config_event(self):    # ‘保存设置’按键的事件处理器
         self.save_user_config()
-        if self.connect_triggered:
+        if self.can_save_room_config:
             self.save_room_config()
 
     def recover_default_event(self):    # ‘默认设置’按键的事件处理器
@@ -2129,7 +2119,7 @@ class MainWindow(MainWindowUi):
         self.tray_icon.setVisible(False)
         # 保存设置
         self.save_user_config()
-        if self.connect_triggered:
+        if self.can_save_room_config:
             self.save_room_config()
         # 停止所有后台线程
         if self.queue_rid_order:
