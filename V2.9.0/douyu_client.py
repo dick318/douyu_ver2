@@ -177,6 +177,7 @@ class MainWindow(MainWindowUi):
         self.can_refresh_details = True    # 是否能更新托盘的直播间信息
         self.can_change_config = True    # 是否处理配置变更信号
         self.flag_stop_query = False    # 是否停止查询
+        self.status_connected = False    # 是否处于已连接状态
 
         # 定义各文本显示框中显示消息的类型
         self.danmu_message_type = (
@@ -497,6 +498,7 @@ class MainWindow(MainWindowUi):
             self.room_id = self.topbar_widget.roomid_enter.text()    # 取直播间号
             if self.room_id:    # 判断直播间号是否正确
                 self.can_save_room_config = True
+                self.status_connected = True
                 self.topbar_widget.roomid_enter.setDisabled(True)    # 不可更改直播间号
                 self.topbar_widget.connect_danmu.setDisabled(True)         
 
@@ -535,6 +537,7 @@ class MainWindow(MainWindowUi):
     def disconnect_event(self):    # 断开按键的事件处理器
         self.event_display.set()
         self.can_save_room_config = False
+        self.status_connected = False
         self.save_room_config()    # 保存直播间设置
         self.topbar_widget.connect_danmu.setDisabled(True)
         self.queue_rid_order.put('close', 1)    # 发送结束消息给接收数据线程        
@@ -668,11 +671,7 @@ class MainWindow(MainWindowUi):
             if self.room_id != self.last_rid: 
                 self.last_rid = self.room_id                
                 self.flag_build_record_thread = True
-                if self.queue_record_data:
-                    self.queue_record_data.put({
-                        'time': int(time.time()),
-                        'type': 'close'
-                    }, 1)    # 通知结束记录消息线程
+                self.stop_record_message()
 
             if self.connect_error_box:    # 自动关闭错误提示的弹窗
                 self.connect_error_box.set_duration(1)
@@ -1347,6 +1346,14 @@ class MainWindow(MainWindowUi):
         th_record.setDaemon(True)
         th_record.start()    # 开启线程
 
+    def stop_record_message(self):    # 停止记录消息线程
+        self.run_record_message = False
+        if self.queue_record_data:            
+            self.queue_record_data.put({
+                'time': int(time.time()),
+                'type': 'close'
+            }, 1)
+        
     def thread_record_message(self, queue, room_id):    # 记录消息的线程
         dbname = 'room_' + room_id + '.db'    # 记录的直播间的数据库名
         database_record = douyu_database_manage.MyDataBase(
@@ -2115,22 +2122,14 @@ class MainWindow(MainWindowUi):
             self.hide()    # 隐藏主窗体
 
     def quit_event(self, event=None):    # 完全退出程序
-        self.hide()
-        self.tray_icon.setVisible(False)
-        # 保存设置
-        self.save_user_config()
-        if self.can_save_room_config:
-            self.save_room_config()
+        self.hide()    # 隐藏主窗体
+        self.tray_icon.setVisible(False)    # 隐藏托盘图标     
+        self.save_config_event()    # 保存设置
         # 停止所有后台线程
-        if self.queue_rid_order:
+        if self.status_connected:
             self.queue_rid_order.put('close', 1)
         self.stop_get_details()
-        if self.queue_record_data:
-            self.run_record_message = False
-            self.queue_record_data.put({
-                'time': int(time.time()),
-                'type': 'close'
-            }, 1)
+        self.stop_record_message()
         self.destroy()
         sys.exit()
         
