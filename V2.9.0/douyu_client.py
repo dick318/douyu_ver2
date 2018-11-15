@@ -567,9 +567,9 @@ class MainWindow(MainWindowUi):
                 data = queue_data.get(1)
                 try:
                     if data['type'] in self.all_message_type:
-                        self.event_display.clear()
-                        self.process_message_signal.emit(data)    # 发送信号，触发处理显示服务器消息                        
                         self.event_display.wait(0.1)
+                        self.event_display.clear()
+                        self.process_message_signal.emit(data)    # 发送信号，触发处理显示服务器消息                                                
                 except Exception as exc:
                     exc_msg = exception_message(exc)
                     ERROR_LOGGER.error(exc_msg)
@@ -1243,7 +1243,7 @@ class MainWindow(MainWindowUi):
                 if self.can_refresh_details:
                     self.tray_icon.setIcon(self.room_icon)
                     self.tray_icon.setToolTip(tooltip)    # 设置托盘图标说明文字
-                    status_str = u'正常' + time_short
+                    status_str = u'直播间信息更新正常' + time_short
                     self.statusbar.get_html_status.setToolTip(status_str)
                     self.statusbar.get_html_status.setText(status_str)    # 更新状态栏
                 self.room_gift.update(data_recv['data']['gift'])    # 更新礼物名称字典
@@ -1515,6 +1515,7 @@ class MainWindow(MainWindowUi):
 
     def thread_query_message(self, db_path, msg_type, condition, max_result):    # 查询线程
         try:
+            self.event_query.set()
             database = douyu_database_manage.MyDataBase(db_path)    # 连接数据库
             con = {}
             for key in condition:    # 删除没有内容的条件
@@ -1548,13 +1549,14 @@ class MainWindow(MainWindowUi):
                         for i in range(len(key_tuple)):    # 将数据元组转换成相应的字典格式，以用于转换
                             data_dict.update({key_tuple[i]: data_tuple[i]})                        
                         result_dsp = self.get_display_text(data_dict)
+                        self.event_query.wait(0.1)    # 避免主窗体出现未响应
                         self.event_query.clear()
                         self.query_result_signal.emit({
                             'time': int(time.time()),
                             'type': 'message',
                             'data': result_dsp
                         })    # 触发显示查询结果                        
-                        self.event_query.wait(0.1)    # 避免主窗体出现未响应
+                        
             elif msg_type == 'user':    # 查询用户信息
                 result_all = self.query_user_info(database, condition)
                 self.query_result_signal.emit({
@@ -1567,14 +1569,14 @@ class MainWindow(MainWindowUi):
                         break
                     info_str = (u'%s<p>ID: %s%s名称: %s</p>' %
                                 (self.message_css, result[0], '&nbsp;'*8, result[1]))
+                    self.event_query.wait(0.1)    # 避免主窗体出现未响应
                     self.event_query.clear()
                     self.query_result_signal.emit({
                         'time': int(time.time()),
                         'type': 'user_info',
                         'data': info_str
                     })                    
-                    self.event_query.wait(0.1)    # 避免主窗体出现未响应
-                
+                                    
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
