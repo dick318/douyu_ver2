@@ -52,10 +52,10 @@ def exception_message(exc):
 
     
 class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
-    def __init__(self, queue_data, queue_recv_order=None, queue_send_order=None,
+    def __init__(self, queue_server_data, queue_recv_order=None, queue_send_order=None,
                  server='openbarrage.douyutv.com', port='8601', group='-9999'):
-        self.queue_server_data = queue_data    # 存放来自弹幕服务器的数据，发送给数据处理线程
-        self.queue_rid_order = queue_recv_order    # 接收来自主UI线程的直播间号或命令
+        self.queue_send_server_data = queue_server_data    # 存放来自弹幕服务器的数据，发送给数据处理线程
+        self.queue_recv_order = queue_recv_order    # 接收来自主UI线程的直播间号或命令
         self.queue_send_order_except = queue_send_order    # 存放关闭命令或接收数据线程自身出现的异常消息，发送给处理数据线程
         
         self.roomid = ''    # 直播间号
@@ -73,15 +73,18 @@ class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
         self.thread.start()
 
     def start(self):
-        if self.queue_rid_order:
-            self.roomid = self.queue_rid_order.get(1)    # 获取来自主UI线程的直播间号
-            data_queue = {
+        if self.queue_recv_order:
+            while True:    # 获取来自主UI线程的直播间号                
+                data_recv = self.queue_recv_order.get(1)
+                if data_recv and data_recv['data']['type'] == 'connect':
+                    self.roomid = data_recv['data']['rid']
+                    break
+            data = {
                 'time': int(time.time()),
                 'type': 'roomid',
                 'rid': self.roomid
             }
-            self.put_order_except(data_queue, 1)    # 将直播间号发送给处理线程
-            self.put_server_data(data_queue, 1)            
+            self.send_order_except(data, 1)    # 将直播间号发送给处理线程            
         if self.connect_server(True):    # 连接弹幕服务器
             login_success = self.loginreq()    # 请求登录
             join_success = self.joingroup()    # 请求加入弹幕组
@@ -94,30 +97,25 @@ class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
             else:
                 self.client_close()
                 if not login_success:
-                    reason = u'登录直播间失败，重启中...'
+                    reason = u'登录直播间失败'
                 else:
-                    reason = u'加入弹幕组失败，重启中...'
+                    reason = u'加入弹幕组失败'
                 tips = reason + u'(rid=%s)' % self.roomid
                 exc_msg = '#' + tips
                 WARNING_LOGGER.warning(exc_msg)
                 PRINT_LOGGER.debug(tips)
-                data_queue = {
+                data = {
                     'time': int(time.time()),
                     'type': 'exception',
-                    'code': 'restart',
+                    'code': 'loginRoomFailed',
                     'reason': reason,
-                    'rid': self.roomid
                 }
-                self.put_order_except(data_queue, 1)
-                self.put_server_data(data_queue, 1)
-                data_queue = {
+                self.send_order_except(data, 1)
+                data = {
                     'time': int(time.time()),
-                    'type': 'close',
-                    'from': 'GetDanmuServerData',
-                    'rid': self.roomid
+                    'type': 'closeThread',
                 }
-                self.put_order_except(data_queue, 1)    # 通知处理数据线程结束线程
-                self.put_server_data(data_queue, 1)
+                self.send_order_except(data, 1)    # 通知处理数据线程结束线程
         else:
             PRINT_LOGGER.debug(u'已取消连接')
 
@@ -136,36 +134,31 @@ class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
                 return True
             except Exception as exc:
                 if str(exc.__class__.__name__) == 'socket.timeout':
-                    code = 'timeout'
-                    reason = u'连接服务器超时，重新连接中...'
+                    code = 'connectServerTimeout'
+                    reason = u'连接服务器超时'
                 else:
-                    code = 'failed'
-                    reason = u'连接服务器失败，重新连接中...'
+                    code = 'connectServerFailed'
+                    reason = u'连接服务器失败'
                 tips = reason + u'(10S后重试) (rid=%s)' % self.roomid
                 exc_msg = exception_message(exc) + '#' + tips
                 WARNING_LOGGER.warning(exc_msg)
                 PRINT_LOGGER.debug(tips)
                 if send_error:
                     send_error = False
-                    data_queue = {
+                    data = {
                         'time': int(time.time()),
                         'type': 'exception',
                         'code': code,
                         'reason': reason,
-                        'rid': self.roomid
                     }
-                    self.put_order_except(data_queue, 1)
-                    self.put_server_data(data_queue, 1)
+                    self.send_order_except(data, 1)
                 for i in range(10):
-                    if self.get_close_from_queue():
-                        data_queue = {
+                    if self.received_disconnect():
+                        data = {
                             'time': int(time.time()),
-                            'type': 'close',
-                            'from': 'GetDanmuServerData',
-                            'rid': self.roomid
+                            'type': 'closeThread',
                         }
-                        self.put_order_except(data_queue, 1)    # 通知处理数据线程结束线程
-                        self.put_server_data(data_queue, 1)
+                        self.send_order_except(data, 1)    # 通知处理数据线程结束线程
                         return False    # 跳出循环，线束本线程
                     time.sleep(1)
                 continue
@@ -173,7 +166,7 @@ class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
     def receive_danmu_data(self):    # 接收来自弹幕服务器的数据，存放在队列中以发送给处理数据线程
         self.danmu_client.settimeout(1)    # 设置超时时间
         while True:
-            if self.get_close_from_queue():
+            if self.received_disconnect():
                 self.logout()    # 登出弹幕服务器
                 break    # 跳出循环，线束本线程
             try:    # 服务器断开连接会发生异常，发生异常则进行重连，并记录异常
@@ -185,62 +178,52 @@ class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
                 exc_msg = exception_message(exc) + '#' + tips
                 WARNING_LOGGER.warning(exc_msg)
                 PRINT_LOGGER.debug(tips)
-                data_queue = {
+                data = {
                     'time': int(time.time()),
                     'type': 'exception',
-                    'code': 'restart',
-                    'reason': u'接收服务器数据时发生异常，重启中...',
-                    'rid': self.roomid
+                    'code': 'recvServerDataFailed',
+                    'reason': u'接收服务器数据时发生异常',
                 }    # 错误信息，进行重启
-                self.put_order_except(data_queue, 1)    # 发送给处理数据线程，再由处理数据线程发送信息给主UI线程，以重新创建后台线程
-                self.put_server_data(data_queue, 1)
+                self.send_order_except(data, 1)    # 发送给处理数据线程，再由处理数据线程发送信息给主UI线程，以重新创建后台线程
                 break    # 跳出循环，线束本线程
             else:
                 if data_recv:
-                    data_queue = {
+                    data = {
                         'time': int(time.time()),
-                        'type': 'message',
+                        'type': 'serverData',
                         'data': data_recv,
-                        'rid': self.roomid
                     }
-                    self.put_server_data(data_queue, 1)    # 将接收的服务器数据放到队列中，以发送给处理数据线程
+                    self.send_server_data(data, 1)    # 将接收的服务器数据放到队列中，以发送给处理数据线程
                 else:
                     tips = u'接收到空的服务器数据(rid=%s)' % self.roomid
                     exc_msg = '#' + tips
                     WARNING_LOGGER.warning(exc_msg)
                     PRINT_LOGGER.debug(tips)
-                    data_queue = {
+                    data = {
                         'time': int(time.time()),
                         'type': 'exception',
-                        'code': 'restart',
-                        'reason': u'接收到空的服务器数据，重启中...',
-                        'rid': self.roomid
+                        'code': 'recvNullData',
+                        'reason': u'接收到空的服务器数据',
                     }    # 错误信息，进行重连
-                    self.put_order_except(data_queue, 1)    # 发送错误信息给处理数据线程，再由处理数据线程发送信息给主UI线程，以重新创建后台线程
-                    self.put_server_data(data_queue, 1)
+                    self.send_order_except(data, 1)    # 发送错误信息给处理数据线程，再由处理数据线程发送信息给主UI线程，以重新创建后台线程
                     break
             if int(time.time()) - self.send_live_time >= 10:    # 每10秒发送一次程序内的心跳信息
                 self.send_live_time = int(time.time())
-                data_queue = {
+                data = {
                     'time': int(time.time()),
-                    'type': 'live',
-                    'rid': self.roomid
+                    'type': 'threadlive',
                 }
-                self.put_order_except(data_queue, 1)    # 发送给处理数据线程，再由处理数据线程发送信息给主UI线程，以重新创建后台线程
-                self.put_server_data(data_queue, 1)                
+                self.send_order_except(data, 1)    # 发送给处理数据线程，再由处理数据线程发送信息给主UI线程，以重新创建后台线程                
 
         # 已跳出循环            
         self.islive = False    # 结束心跳线程
         #time.sleep(1)
         self.client_close()    # 关闭弹幕服务器连接
-        data_queue = {
+        data = {
             'time': int(time.time()),
-            'type': 'close',
-            'from': 'GetDanmuServerData',
-            'rid': self.roomid
+            'type': 'closeThread',
         }
-        self.put_order_except(data_queue, 1)    # 通知处理数据线程结束线程
-        self.put_server_data(data_queue, 1)
+        self.send_order_except(data, 1)    # 通知处理数据线程结束线程
         PRINT_LOGGER.debug('thread_GetDanmuServerData: closed!')
 
     def loginreq(self):    # 请求登录弹幕服务器
@@ -321,22 +304,34 @@ class GetDanmuServerData(object):    # 连接弹幕服务器并接收数据
         msg_end = bytearray([0x00])
         return bytes(msg_len + head_len + head_code + content_bytes + msg_end)
 
-    def get_close_from_queue(self):
-        if self.queue_rid_order and not self.queue_rid_order.empty():
+    def received_disconnect(self):
+        if self.queue_recv_order and not self.queue_recv_order.empty():
             try:
-                if self.queue_rid_order.get(0) == 'close': 
+                data_recv = self.queue_recv_order.get(0)
+                if data_recv and data_recv['data']['type'] == 'disconnect': 
                     return True
                 else:
                     return False
             except:
                 return False
 
-    def put_server_data(self, data, block=1):
-        self.queue_server_data.put(data, block)
+    def send_server_data(self, data, block=1):
+        data_send = {
+            'time': int(time.time()),
+            'roomid': self.roomid,
+            'data': data,
+        }
+        self.queue_send_server_data.put(data_send, block)
 
-    def put_order_except(self, data, block=1):
+    def send_order_except(self, data, block=1):
         if self.queue_send_order_except:
-            self.queue_send_order_except.put(data, block)
+            data_send = {
+                'time': int(time.time()),
+                'roomid': self.roomid,
+                'data': data,
+            }
+            self.queue_send_order_except.put(data_send, block)
+            self.queue_send_server_data.put(data_send, block)
     
 
 if __name__ == '__main__':    # 直接运行本程序，则在命令行中显示弹幕信息，无UI界面

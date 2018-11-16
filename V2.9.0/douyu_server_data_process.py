@@ -40,10 +40,10 @@ GIFT_NAME_DICT = {
 
 
 class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的各种信息数据
-    def __init__(self, queue_data, queue_message=None,
+    def __init__(self, queue_server_data, queue_send_message=None,
                  queue_revc_order=None, queue_send_order=None):
-        self.queue_server_data = queue_data    # 接收来自接收数据线程的数据，则弹幕服务器的数据
-        self.queue_message_data = queue_message    # 存放处理分析得到的数据，发送给主UI线程
+        self.queue_recv_server_data = queue_server_data    # 接收来自接收数据线程的数据，则弹幕服务器的数据
+        self.queue_send_message_data = queue_send_message    # 存放处理分析得到的数据，发送给主UI线程
         self.queue_recv_order_except = queue_revc_order    # 接收来自接收数据线程的关闭命令或程序异常消息
         self.queue_send_order_except = queue_send_order    # 存放发送给主UI线程的关闭命令或程序异常消息
         
@@ -85,18 +85,19 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
         
     def start(self):
         while True:
-            server_data = self.get_server_data()    # 获取来自接收线程的数据
-            order_except = self.get_order_except()
-            if order_except:
+            server_data_recv = self.recv_server_data()    # 获取来自接收线程的数据
+            order_except_recv = self.recv_order_except()
+            if order_except_recv:
+                order_except = order_except_recv['data']
                 if order_except['type'] == 'roomid':
                     self.roomid = order_except['rid']
-                elif order_except['type'] == 'close':    # 收到结束线程的指令
+                elif order_except['type'] == 'closeThread':    # 收到结束线程的指令
                     break    # 跳出循环，结束本线程
-                elif order_except['type'] in ('exception', 'live'):    # 收到接收线程发生异常的消息或程序内心跳信息
-                    self.put_order_except(order_except)
-                    self.put_message_data(order_except)
+                elif order_except['type'] in ('exception', 'threadlive'):    # 收到接收线程发生异常的消息或程序内心跳信息
+                    self.send_order_except(order_except)
                 
-            if server_data and server_data['type'] == 'message':
+            if server_data_recv and server_data_recv['data']['type'] == 'serverData':
+                server_data = server_data_recv['data']
                 msg_recv_bytes = server_data['data']
                 if not self.buf_isnull:    # 存在缓存数据，缓存数据与刚接收的数据合起来
                     msg_recv_bytes = self.msg_buf + msg_recv_bytes
@@ -129,12 +130,9 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
         #time.sleep(0.5)
         data_send = {
             'time': int(time.time()),
-            'type': 'closed',
-            'from': 'ProcessDanmuServerData',
-            'rid': self.roomid
+            'type': 'closeThread',
         }
-        self.put_order_except(data_send)
-        self.put_message_data(data_send)
+        self.send_order_except(data_send)
         PRINT_LOGGER.debug('thread_ProcessDanmuServerData: closed!')                
 
     def parse_msg_utf8(self, msg_dict):    # 提取消息类型，并调用不同的处理方法
@@ -161,7 +159,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'type': 'loginres',
                 'rid': self.roomid
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -178,7 +176,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'delay': self.keeplive_time - keeplive_msg['time'],
                 'rid': self.roomid
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -229,7 +227,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'noble': noble_name,
                 'client': client_type,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -265,7 +263,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'nl': nl,
                 'noble': noble_name,                 
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -299,7 +297,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'dnic': dnic,
                 'endtime': time_end,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -332,7 +330,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'bnn': bnn,
                 'rid': rid,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -371,7 +369,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'rid': rid,
                 'level': level,
             }
-            self.put_message_data(data_send)            
+            self.send_message_data(data_send)            
             
         except Exception as exc:
             exc_msg = exception_message(exc)
@@ -444,7 +442,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                     'noble': noble_name,                    
                     'gn': giftname,
                 }
-                self.put_message_data(data_send)                
+                self.send_message_data(data_send)                
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -491,7 +489,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'noble': '',                    
                 'gn': giftname,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -528,7 +526,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'gfid': gfid,
                 'sid': sid,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -563,7 +561,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'dn': dn,
                 'gn': gn,                               
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -607,7 +605,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'nl': nl,
                 'noble': noble_name,                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -651,7 +649,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'nl': nl,
                 'noble': noble_name,                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -684,7 +682,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'chatmsg': chatmsg,
                 'noble': noble_name,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -709,7 +707,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'rid': rid,
                 'trid': trid,                                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -735,7 +733,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'rid': rid,
                 'ss': ss,                                
             }      
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -759,7 +757,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'reason': error_str,
                 'rid': self.roomid,
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
@@ -807,7 +805,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'list_all': lists[1],
                 'list_day': lists[2],                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
             #PRINT_LOGGER.debug(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
@@ -846,7 +844,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'bnn': bnn,
                 'list': fans,                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
             #PRINT_LOGGER.debug(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
@@ -885,7 +883,7 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'rid': rid,
                 'nl': nobles,                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
             #PRINT_LOGGER.debug(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
@@ -918,30 +916,41 @@ class ProcessDanmuServerData(object):    # 处理从弹幕服务器接收到的�
                 'rid': rid,
                 'list': nobles,                
             }
-            self.put_message_data(data_send)
+            self.send_message_data(data_send)
             #PRINT_LOGGER.debug(data_send)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
             ERROR_LOGGER.error(msg)
             
-    def get_server_data(self):
-        return self.queue_server_data.get(1)
+    def recv_server_data(self):
+        return self.queue_recv_server_data.get(1)
     
-    def put_message_data(self, data, block=1):    # 将分析提取出来的数据发送给主UI线程用于显示
-        if self.queue_message_data:
-            self.queue_message_data.put(data, block)
+    def send_message_data(self, data, block=1):    # 将分析提取出来的数据发送给主UI线程用于显示
+        if self.queue_send_message_data:
+            data_send = {
+                'time': int(time.time()),
+                'roomid': self.roomid,
+                'data': data,
+            }
+            self.queue_send_message_data.put(data_send, block)
 
-    def get_order_except(self):
+    def recv_order_except(self):
         if self.queue_recv_order_except and not self.queue_recv_order_except.empty():
             try:
                 return self.queue_recv_order_except.get(0)
             except:
                 return None
 
-    def put_order_except(self, data, block=1):
+    def send_order_except(self, data, block=1):
         if self.queue_send_order_except:
-            self.queue_send_order_except.put(data, block)            
+            data_send = {
+                'time': int(time.time()),
+                'roomid': self.roomid,
+                'data': data,
+            }            
+            self.queue_send_order_except.put(data_send, block)
+            self.queue_send_message_data.put(data_send, block)
 
     def trans_char(self, strg):    # 转义字符的替换
         return strg.replace('\\\\', '\\').replace('@S', '/').replace('@A', '@')

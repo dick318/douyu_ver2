@@ -154,10 +154,10 @@ class MainWindow(MainWindowUi):
         self.room_details_url = 'http://open.douyucdn.cn/api/RoomApi/room/'    # 获取直播间详细信息的url
 
         # 创建线程间传递数据的队列        
-        self.queue_rid_order = Queue()    # 主UI线程与接收数据线程间的队列，传递直播间号或命令给接收数据线程
-        self.queue_server_data = Queue()    # 接收数据线程与处理数据线程间的队列，传递接收到的服务器数据给处理数据线程
+        self.queue_connect_order = Queue()    # 主UI线程与接收服务器数据线程间的队列，传递命令给接收服务器数据线程
+        self.queue_server_data = Queue()    # 接收服务器数据线程与处理数据线程间的队列，传递接收到的服务器数据给处理数据线程
         self.queue_message_data = Queue()    # 触发显示线程与处理数据线程间的队列，传递提取到的消息数据给触发显示线程
-        self.queue_order_except_1 = Queue()    # 接收数据线程与处理数据线程间的队列, 传递关闭命令和程序异常消息
+        self.queue_order_except_1 = Queue()    # 接收服务器数据线程与处理数据线程间的队列, 传递关闭命令和程序异常消息
         self.queue_order_except_2 = Queue()    # 处理数据线程与主UI线程间的队列, 传递关闭命令和程序异常消息        
         self.queue_record_data = Queue()    # 主UI线程与数据库记录数据线程间的队列，传递需记录的数据
         self.queue_details_order = Queue()    # 主UI线程与获取直播间详细信息线程间的队列，传递命令或直播间号给获取信息线程
@@ -554,15 +554,15 @@ class MainWindow(MainWindowUi):
     def start_connect_server_threads(self, roomid):    # 创建并开启连接弹幕服务器相关线程
         try:
             # 定义所需队列            
-            self.queue_rid_order = Queue()
+            self.queue_connect_order = Queue()
             self.queue_server_data = Queue()
             self.queue_message_data = Queue()
             self.queue_order_except_1 = Queue()
             self.queue_order_except_2 = Queue()
             
-            self.queue_rid_order.put(roomid, 1)    # 直播间号发送给接收数据线程
+            self.send_connect_order({'type': 'connect', 'rid': self.room_id,})    # 直播间号发送给接收数据线程
             receive_server_data = GetDanmuServerData(
-                self.queue_server_data, self.queue_rid_order,
+                self.queue_server_data, self.queue_connect_order,
                 self.queue_order_except_1, self.set_danmu_server,
                 self.set_danmu_port, self.set_danmu_group)    # 接收数据线程，心跳线程
             process_server_data = ProcessDanmuServerData(
@@ -579,7 +579,15 @@ class MainWindow(MainWindowUi):
     def stop_connect_server_threads(self, roomid):    # 停止连接弹幕服务器相关线程
         self.keeplive_timer.stop()    # 停止服务器心跳定时器
         self.thread_live_timer.stop()    # 停止程序内心跳定时器
-        self.queue_rid_order.put('close', 1)    # 发送结束消息给接收数据线程
+        self.send_connect_order({'type': 'disconnect'})    # 发送结束消息给接收数据线程
+
+    def send_connect_order(self, data, block=1):
+        data_send = {
+            'time': int(time.time()),
+            'roomid': self.room_id,
+            'data': data,
+        }
+        self.queue_connect_order.put(data_send, block)
         
     def start_display_message(self):    # 创建并开启触发显示线程
         self.event_display.set()
@@ -590,38 +598,41 @@ class MainWindow(MainWindowUi):
         thread_display.setDaemon(True)
         thread_display.start()
 
-    def thread_display_message(self, queue_data, queue_order_except):    # 触发显示线程
+    def thread_display_message(self, queue_message_data, queue_order_except):    # 触发显示线程
         while self.run_display_message:
             if not queue_order_except.empty():
                 try:
-                    order_except = queue_order_except.get(0)                   
-                    if order_except['type'] == 'closed':    # 后台接收和处理线程都已经关闭，关闭本线程
+                    order_except_recv = queue_order_except.get(0)                    
+                    if order_except_recv['data']['type'] == 'closeThread':    # 后台接收和处理线程都已经关闭，关闭本线程
                         break
                     else:
-                        self.process_message_signal.emit(order_except)    # 触发处理程序内部异常信息
+                        self.process_message_signal.emit(order_except_recv)    # 触发处理程序内部异常信息
                 except:
                     pass
             else:
-                data = queue_data.get(1)
+                data_recv = queue_message_data.get(1)
                 try:
-                    if data['type'] in self.all_message_type:
+                    if data_recv['data']['type'] in self.all_message_type:
                         self.event_display.wait(0.1)
                         self.event_display.clear()
-                        self.process_message_signal.emit(data)    # 发送信号，触发处理显示服务器消息                                                
+                        self.process_message_signal.emit(data_recv)    # 发送信号，触发处理显示服务器消息                                                
                 except Exception as exc:
                     exc_msg = exception_message(exc)
                     ERROR_LOGGER.error(exc_msg)
-                    ERROR_LOGGER.error(repr(data))
+                    ERROR_LOGGER.error(repr(data_recv))
         self.process_message_signal.emit({
             'time': int(time.time()),
-            'type': 'disconnected',
-            'from': 'main',
-            'rid': order_except['rid']
+            'roomid': order_except_recv['roomid'],
+            'data': {
+                'time': int(time.time()),
+                'type': 'disconnected'
+            },            
         })
         PRINT_LOGGER.debug('thread_display_message: closed!')
 
-    def process_message_event(self, data):    # 处理显示消息，由触发显示线程触发        
+    def process_message_event(self, data_recv):    # 处理显示消息，由触发显示线程触发        
         try:
+            data = data_recv['data']
             if data['type'] in self.danmu_message_type:
                 self.display_danmu_message(data)
             elif data['type'] in self.gift_message_type:
@@ -634,7 +645,7 @@ class MainWindow(MainWindowUi):
                 self.display_rss_message(data)
             elif data['type'] == 'loginres':
                 self.process_loginres_message(data)
-            elif data['type'] in ('keeplive', 'live'):
+            elif data['type'] in ('keeplive', 'threadlive'):
                 self.process_keeplive_message(data)
             elif data['type'] in ('exception', 'error'):
                 self.process_error_message(data)               
@@ -699,7 +710,7 @@ class MainWindow(MainWindowUi):
         if data['type'] == 'keeplive':
             self.keeplive_timer.stop()
             self.keeplive_timer.start(45000)    # 重置服务器心跳定时器45s
-        elif data['type'] == 'live':
+        elif data['type'] == 'threadlive':
             self.thread_live_timer.stop()
             self.thread_live_timer.start(20000)    # 重置程序内心跳定时器20s        
 
@@ -747,7 +758,7 @@ class MainWindow(MainWindowUi):
             time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
             msg_remind = time_str + '\n' + data['reason']
             self.show_connect_error(msg_remind, self.room_id)    # 弹窗提示错误
-            if data['code'] in ['failed', 'timeout']:    # 网络断开或连接超时，处于重试状态
+            if data['code'] in ('connectServerTimeout', 'connectServerFailed'):    # 网络断开或连接超时，处于重试状态
                 pass
             else:    # 发生其它错误导致需重启后台线程
                 self.flag_restart = True    # 标志自动重启后台线程
@@ -1122,7 +1133,6 @@ class MainWindow(MainWindowUi):
             self.queue_details_order.put({
                 'time': int(time.time()),
                 'type': 'close',
-                'from': 'main'
             }, 1)    # 通知结束获取直播间详细信息线程
                 
     def update_details_timer_event(self):    # 定时更新直播间详细信息的处理器：向线程发直播间号以获取对应直播间信息
@@ -1134,11 +1144,11 @@ class MainWindow(MainWindowUi):
         }, 1)
         self.update_details_timer.start(30000)    # 30秒后再次更新直播间详细信息
         
-    def thread_get_details(self, queue_recv):    # 获取直播间详细信息的线程
+    def thread_get_details(self, queue_details):    # 获取直播间详细信息的线程
         avatar_dir = self.owner_avatar_path    # 头像文件存放目录名
         while self.run_get_details:
             status_text = ''
-            data_recv = queue_recv.get(1)    # 获取直播间号或命令
+            data_recv = queue_details.get(1)    # 获取直播间号或命令
             data_send = {}
             if data_recv['type'] == 'close':    # 结束线程
                 break
@@ -1381,7 +1391,7 @@ class MainWindow(MainWindowUi):
                 'type': 'close'
             }, 1)
         
-    def thread_record_message(self, queue, room_id):    # 记录消息的线程
+    def thread_record_message(self, queue_data, room_id):    # 记录消息的线程
         dbname = 'room_' + room_id + '.db'    # 记录的直播间的数据库名
         database_record = douyu_database_manage.MyDataBase(
             os.path.join(self.database_path, dbname))    # 连接或创建数据库
@@ -1395,7 +1405,7 @@ class MainWindow(MainWindowUi):
             })
             ERROR_LOGGER.error(u'数据库的表格错误：%s, %s' % (repr(dbname), repr(result)))
         while self.run_record_message:
-            data = queue.get(1)
+            data = queue_data.get(1)
             if data['type'] == 'close':    # 收到结束线程的指令
                 break
             else:
@@ -2150,13 +2160,12 @@ class MainWindow(MainWindowUi):
 
     def quit_event(self, event=None):    # 完全退出程序
         self.hide()    # 隐藏主窗体
-        self.tray_icon.setVisible(False)    # 隐藏托盘图标     
-        self.save_config_event()    # 保存设置
+        self.tray_icon.setVisible(False)    # 隐藏托盘图标             
         # 停止所有后台线程
         if self.status_connected:
-            self.queue_rid_order.put('close', 1)
-        self.stop_get_details()
+            self.disconnect_event()
         self.stop_record_message()
+        self.save_config_event()    # 保存设置
         self.destroy()
         sys.exit()
         
