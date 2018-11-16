@@ -135,13 +135,11 @@ class MainWindow(MainWindowUi):
             pixmap.fill(QColor('#1E87F0'))
             self.default_icon = QIcon(pixmap)        
         self.room_icon = self.default_icon    # 成功连接后的图标
-        self.tooltip = u'未连接'    # 鼠标放在托盘图标上时显示的文字
 
         # 设置主窗体图标和托盘图标
         self.setWindowIcon(self.default_icon)
-        self.setWindowTitle(self.tooltip)
-        self.tray_icon.setIcon(self.default_icon)
-        self.tray_icon.setToolTip(self.tooltip)
+        self.setWindowTitle(u'未连接')
+        self.set_tray_icon_tooltip(u'未连接', self.default_icon)
         self.tray_icon.show()
         # 创建并设置直播间默认头像
         self.default_avatar = QPixmap(150, 150)    
@@ -174,7 +172,7 @@ class MainWindow(MainWindowUi):
         self.flag_restart = False    # 是否进行重启
         self.can_save_room_config = False    # 是否可保存直播间设置
         self.flag_build_record_thread = True    # 是否启动新的记录线程
-        self.can_refresh_details = True    # 是否能更新托盘的直播间信息
+        self.can_refresh_tray_details = False    # 是否能更新托盘的直播间信息
         self.can_change_config = True    # 是否处理配置变更信号
         self.flag_stop_query = False    # 是否停止查询
         self.status_connected = False    # 是否处于已连接状态
@@ -497,50 +495,91 @@ class MainWindow(MainWindowUi):
         try:
             self.room_id = self.topbar_widget.roomid_enter.text()    # 取直播间号
             if self.room_id:    # 判断直播间号是否正确
-                self.can_save_room_config = True
-                self.status_connected = True
                 self.topbar_widget.roomid_enter.setDisabled(True)    # 不可更改直播间号
-                self.topbar_widget.connect_danmu.setDisabled(True)         
+                self.topbar_widget.connect_danmu.setDisabled(True)
+                self.setWindowTitle(u'直播间【%s】' % self.room_id)    # 设置窗体标题
+                self.set_statusbar_connect_status(u'连接中...')
+                self.room_icon = self.load_room_avatar(self.room_id)
+                self.set_tray_icon_tooltip(u'连接中...', self.room_icon)
+                                           
+                self.last_title = ''
+                self.room_owner = ''
+                self.can_save_room_config = True
+                self.status_connected = True                
+                self.start_connect_server_threads(self.room_id)    # 创建并开启连接弹幕服务器相关线程
+                self.start_get_details()
+                self.update_details_timer_event()
 
                 self.gift_dict_saved = self.load_gift_dict()    # 加载保存在文件中的礼物ID与名称
                 self.room_gift.update(self.gift_dict_saved)
                 self.load_room_config()    # 加载直播间设置
-                
-                # 定义所需队列            
-                self.queue_rid_order = Queue()
-                self.queue_server_data = Queue()
-                self.queue_message_data = Queue()
-                self.queue_order_except_1 = Queue()
-                self.queue_order_except_2 = Queue()
-                
-                self.queue_rid_order.put(self.room_id, 1)    # 直播间号发送给接收数据线程
-                receive_server_data = GetDanmuServerData(
-                    self.queue_server_data, self.queue_rid_order,
-                    self.queue_order_except_1, self.set_danmu_server,
-                    self.set_danmu_port, self.set_danmu_group)    # 接收数据线程，心跳线程
-                process_server_data = ProcessDanmuServerData(
-                    self.queue_server_data, self.queue_message_data,
-                    self.queue_order_except_1, self.queue_order_except_2)    # 处理数据线程
-                # 启动各线程
-                self.start_display_message()
-                receive_server_data.thread_start()
-                process_server_data.thread_start()
-                self.start_get_details()
-
+                self.topbar_widget.connect_danmu.setText(u'断开')    # ‘连接’按钮更改为‘断开’按钮
+                self.tray_icon.action_connect.setText(u'断开(%s)' % self.room_id)    # 托盘图标菜单选项更改为‘断开’
+                self.topbar_widget.connect_danmu.clicked.disconnect()    # 取消按键事件绑定
+                self.tray_icon.action_connect.triggered.disconnect()  
+                self.topbar_widget.connect_danmu.clicked.connect(self.disconnect_event)    # 绑定断开连接事件处理器
+                self.tray_icon.action_connect.triggered.connect(self.disconnect_event)
+                self.topbar_widget.connect_danmu.setEnabled(True)
             else:
                 self.show_mainwindow_event()
                 self.show_connect_error(u'请输入直播间号', self.room_id)
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
-
+            
     def disconnect_event(self):    # 断开按键的事件处理器
-        self.event_display.set()
-        self.can_save_room_config = False
-        self.status_connected = False
-        self.save_room_config()    # 保存直播间设置
-        self.topbar_widget.connect_danmu.setDisabled(True)
-        self.queue_rid_order.put('close', 1)    # 发送结束消息给接收数据线程        
+        try:
+            self.topbar_widget.connect_danmu.setDisabled(True)
+            self.setWindowTitle(u'未连接')    # 设置窗体标题
+            self.set_statusbar_connect_status(u'断开连接中...')
+            self.set_tray_icon_tooltip(u'断开连接中...', self.default_icon)
+            
+            self.event_display.set()
+            self.can_save_room_config = False
+            self.can_refresh_tray_details = False
+            self.status_connected = False
+            self.stop_connect_server_threads(self.room_id)    # 停止连接弹幕服务器相关线程
+            self.stop_get_details()    # 停止更新直播间信息线程
+            
+            self.save_room_config()    # 保存直播间设置            
+            self.topbar_widget.connect_danmu.clicked.disconnect()    # 取消按键事件绑定
+            self.tray_icon.action_connect.triggered.disconnect()  
+            self.topbar_widget.connect_danmu.clicked.connect(self.connect_event)    # 绑定连接事件处理器
+            self.tray_icon.action_connect.triggered.connect(self.connect_event)
+            self.topbar_widget.roomid_enter.setEnabled(True)
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+
+    def start_connect_server_threads(self, roomid):    # 创建并开启连接弹幕服务器相关线程
+        try:
+            # 定义所需队列            
+            self.queue_rid_order = Queue()
+            self.queue_server_data = Queue()
+            self.queue_message_data = Queue()
+            self.queue_order_except_1 = Queue()
+            self.queue_order_except_2 = Queue()
+            
+            self.queue_rid_order.put(roomid, 1)    # 直播间号发送给接收数据线程
+            receive_server_data = GetDanmuServerData(
+                self.queue_server_data, self.queue_rid_order,
+                self.queue_order_except_1, self.set_danmu_server,
+                self.set_danmu_port, self.set_danmu_group)    # 接收数据线程，心跳线程
+            process_server_data = ProcessDanmuServerData(
+                self.queue_server_data, self.queue_message_data,
+                self.queue_order_except_1, self.queue_order_except_2)    # 处理数据线程
+            # 启动各线程            
+            receive_server_data.thread_start()
+            process_server_data.thread_start()
+            self.start_display_message()
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+
+    def stop_connect_server_threads(self, roomid):    # 停止连接弹幕服务器相关线程
+        self.keeplive_timer.stop()    # 停止服务器心跳定时器
+        self.thread_live_timer.stop()    # 停止程序内心跳定时器
+        self.queue_rid_order.put('close', 1)    # 发送结束消息给接收数据线程
         
     def start_display_message(self):    # 创建并开启触发显示线程
         self.event_display.set()
@@ -616,55 +655,15 @@ class MainWindow(MainWindowUi):
             self.event_display.set()
             pass
 
-    def process_disconnected_message(self, data):    # 处理断开连接的消息
-        try:
-            self.keeplive_timer.stop()    # 停止服务器心跳定时器
-            self.thread_live_timer.stop()    # 停止程序内心跳定时器
-            self.stop_get_details()    # 停止更新直播间信息线程
-
-            if self.flag_restart:    # 发生错误要自动重启后台线程                
-                self.flag_restart = False
-                self.connect_event()    # 触发连接事件处理器
-            else:    # 是正常断开连接
-                self.room_icon = self.default_icon
-                self.can_refresh_details = False
-                time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
-                self.update_title_statusbar_tray(self.room_icon, u'已断开连接' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
-                self.last_title = ''
-                self.room_owner = ''
-                self.topbar_widget.connect_danmu.setText(u'连接')    # ‘断开’按钮更改为‘连接’按钮
-                self.tray_icon.action_connect.setText(u'连接(%s)' % self.room_id)    # 托盘图标菜单选项更改为‘连接’
-                self.topbar_widget.connect_danmu.clicked.disconnect()    # 取消按键事件绑定
-                self.tray_icon.action_connect.triggered.disconnect()  
-                self.topbar_widget.connect_danmu.clicked.connect(self.connect_event)    # 绑定连接事件处理器
-                self.tray_icon.action_connect.triggered.connect(self.connect_event)
-                self.topbar_widget.roomid_enter.setEnabled(True)
-                self.topbar_widget.connect_danmu.setEnabled(True)
-        except Exception as exc:
-            exc_msg = exception_message(exc)
-            ERROR_LOGGER.error(exc_msg)
-
     def process_loginres_message(self, data):    # 处理登录直播间成功的消息
         try:
-            tooltip = u'直播间号：'+self.room_id
+            self.can_refresh_tray_details = True            
             time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
-            self.statusbar.connect_status.setToolTip(u'连接成功' + time_short)
-            self.statusbar.connect_status.setText(u'连接成功' + time_short)    # 状态栏显示状态
-            self.setWindowTitle(tooltip)    # 设置窗体标题
-            self.tray_icon.setToolTip(tooltip)    # 设置托盘图标说明文字
-            
-            self.topbar_widget.connect_danmu.setText(u'断开')    # ‘连接’按钮更改为‘断开’按钮
-            self.tray_icon.action_connect.setText(u'断开(%s)' % self.room_id)    # 托盘图标菜单选项更改为‘断开’
-            self.topbar_widget.connect_danmu.clicked.disconnect()    # 取消按键事件绑定
-            self.tray_icon.action_connect.triggered.disconnect()  
-            self.topbar_widget.connect_danmu.clicked.connect(self.disconnect_event)    # 绑定断开连接事件处理器
-            self.tray_icon.action_connect.triggered.connect(self.disconnect_event)
-            self.topbar_widget.connect_danmu.setEnabled(True)
+            self.set_statusbar_connect_status(u'连接成功' + time_short)           
+            self.set_tray_icon_tooltip(u'连接成功' + time_short)
 
             self.keeplive_timer.start(45000)    # 开启服务器心跳消息定时器，45秒内没接收到心跳消息就会重启连接
             self.thread_live_timer.start(20000)    # 开启程序内心跳消息定时器，20秒内没接收到心跳消息就会重启连接
-            self.can_refresh_details = True
-            self.update_details_timer.start(100)    # 登录成功，0.1秒后更新直播间详细信息
             
             # 与上次登录的直播间不同，则关闭上次的记录线程，再重新创建队列和记录线程
             # 避免两个记录线程同时修改同一个数据库导致异常
@@ -678,7 +677,24 @@ class MainWindow(MainWindowUi):
         except Exception as exc:
             exc_msg = exception_message(exc)
             ERROR_LOGGER.error(exc_msg)
-                
+
+    def process_disconnected_message(self, data):    # 处理断开连接的消息
+        try:
+            if self.flag_restart:    # 发生错误要自动重启后台线程                
+                self.flag_restart = False
+                self.start_connect_server_threads(self.room_id)
+            else:
+                self.room_icon = self.default_icon            
+                time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
+                self.set_statusbar_connect_status(u'已断开连接' + time_short)            
+                self.set_tray_icon_tooltip(u'已断开连接' + time_short)
+                self.topbar_widget.connect_danmu.setText(u'连接')    # ‘断开’按钮更改为‘连接’按钮
+                self.tray_icon.action_connect.setText(u'连接(%s)' % self.room_id)    # 托盘图标菜单选项更改为‘连接’
+                self.topbar_widget.connect_danmu.setEnabled(True)
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
     def process_keeplive_message(self, data):    # 处理心跳消息
         if data['type'] == 'keeplive':
             self.keeplive_timer.stop()
@@ -687,25 +703,58 @@ class MainWindow(MainWindowUi):
             self.thread_live_timer.stop()
             self.thread_live_timer.start(20000)    # 重置程序内心跳定时器20s        
 
+    def keeplive_timeout_event(self):    # 定时器的事件处理器：发生服务器心跳异常
+        try:
+            exc_msg = u'#服务器心跳异常(rid=%s)' % self.room_id
+            WARNING_LOGGER.warning(exc_msg)
+            self.can_refresh_tray_details = False
+            time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
+            self.set_statusbar_connect_status(u'服务器心跳异常，重启中...' + time_short)            
+            self.set_tray_icon_tooltip(u'服务器心跳异常，重启中...' + time_short)
+     
+            time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
+            msg_remind = time_error + u'\n服务器心跳异常，重启中...'
+            self.show_connect_error(msg_remind, self.room_id)    # 弹窗提醒
+            self.flag_restart = True
+            self.stop_connect_server_threads()
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
+    def thread_live_timeout_event(self):    # 定时器的事件处理器：发生程序内心跳异常
+        try:
+            exc_msg = u'#程序内部心跳异常(rid=%s)' % self.room_id
+            ERROR_LOGGER.error(exc_msg)
+            self.can_refresh_tray_details = False
+            time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
+            self.set_statusbar_connect_status(u'程序内部心跳异常，请重启程序' + time_short)            
+            self.set_tray_icon_tooltip(u'程序内部心跳异常，请重启程序' + time_short)
+       
+            time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
+            msg_remind = time_error + u'\n程序内部心跳异常，请重启程序'
+            self.show_connect_error(msg_remind, self.room_id)    # 弹窗提醒
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
     def process_error_message(self, data):    # 弹窗提醒错误消息和相应处理
-        self.can_refresh_details = False
-        time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
-        self.update_title_statusbar_tray(self.room_icon, data['reason'] + time_short)    # 设置窗体标题、状态栏、托盘图标说明
+        try:
+            self.can_refresh_tray_details = False
+            time_short = time.strftime(' (%H:%M:%S) ', time.localtime(data['time']))
+            self.set_statusbar_connect_status(data['reason'] + time_short)            
+            self.set_tray_icon_tooltip(data['reason'] + time_short)
 
-        time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
-        msg_remind = time_str + '\n' + data['reason']
-        self.show_connect_error(msg_remind, self.room_id)    # 弹窗提示错误
-        if data['code'] in ['failed', 'timeout']:    # 网络断开或连接超时，处于重试状态
-            self.topbar_widget.connect_danmu.setText(u'断开')
-            self.tray_icon.action_connect.setText(u'断开(%s)' % self.room_id)
-            self.topbar_widget.connect_danmu.clicked.disconnect()    # 取消按键事件绑定
-            self.tray_icon.action_connect.triggered.disconnect()  
-            self.topbar_widget.connect_danmu.clicked.connect(self.disconnect_event)
-            self.tray_icon.action_connect.triggered.connect(self.disconnect_event)
-            self.topbar_widget.connect_danmu.setEnabled(True)
-        else:    # 发生其它错误导致需重启后台线程
-            self.flag_restart = True    # 标志自动重启后台线程
-            self.disconnect_event()    # 触发断开连接事件处理器
+            time_str = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime(data['time']))
+            msg_remind = time_str + '\n' + data['reason']
+            self.show_connect_error(msg_remind, self.room_id)    # 弹窗提示错误
+            if data['code'] in ['failed', 'timeout']:    # 网络断开或连接超时，处于重试状态
+                pass
+            else:    # 发生其它错误导致需重启后台线程
+                self.flag_restart = True    # 标志自动重启后台线程
+                self.stop_connect_server_threads()
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
             
     def display_danmu_message(self, data):    # 在弹幕消息框中显示消息
         if not (data['type'] == 'uenter' and self.set_hide_uenter):    # 判断是否屏蔽消息
@@ -860,46 +909,8 @@ class MainWindow(MainWindowUi):
                 self.open_remind_box.set_duration(1)
                 
         text_html = self.get_display_text(data)
-        self.display_record_message(text_html)
-        self.update_details_timer.stop()
-        self.update_details_timer.start(5000)    # 5秒后更新直播间详细信息        
-
-    def keeplive_timeout_event(self):    # 定时器的事件处理器：发生服务器心跳异常
-        exc_msg = u'#服务器心跳异常(rid=%s)' % self.room_id
-        WARNING_LOGGER.warning(exc_msg)
-        self.keeplive_timer.stop()
-        self.thread_live_timer.stop()
-
-        self.can_refresh_details = False
-        time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
-        self.update_title_statusbar_tray(self.room_icon, u'服务器心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
+        self.display_record_message(text_html)       
         
-        time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
-        msg_remind = time_error + u'\n服务器心跳异常'
-        self.show_connect_error(msg_remind, self.room_id)    # 弹窗提醒
-        self.flag_restart = True
-        self.disconnect_event()    # 触发断开连接事件处理器
-
-    def thread_live_timeout_event(self):    # 定时器的事件处理器：发生程序内心跳异常
-        exc_msg = u'#程序内部心跳异常(rid=%s)' % self.room_id
-        ERROR_LOGGER.error(exc_msg)
-        self.keeplive_timer.stop()
-        self.thread_live_timer.stop()
-        self.can_refresh_details = False
-        time_short = time.strftime(' (%H:%M:%S) ', time.localtime())
-        self.update_title_statusbar_tray(self.room_icon, u'程序内部心跳异常' + time_short)    # 设置窗体标题、状态栏、托盘图标说明
-        
-        time_error = time.strftime('[%Y-%m-%d %H:%M:%S]', time.localtime())
-        msg_remind = time_error + u'\n程序内部心跳异常，请重启程序'
-        self.show_connect_error(msg_remind, self.room_id)    # 弹窗提醒
-
-    def update_title_statusbar_tray(self, taskbar_icon, tooltip):    # 更新主窗体标题、状态栏、托盘信息
-        self.setWindowTitle(tooltip)
-        self.statusbar.connect_status.setToolTip(tooltip)
-        self.statusbar.connect_status.setText(tooltip)
-        self.tray_icon.setIcon(taskbar_icon)
-        self.tray_icon.setToolTip(tooltip)
-
     def get_display_text(self, msg):    # 将字典型消息转换成可用于在文本框中显示的html文本
         try:
             text = []
@@ -1042,7 +1053,52 @@ class MainWindow(MainWindowUi):
             ERROR_LOGGER.error(exc_msg)
             ERROR_LOGGER.error(repr(msg))
             return None
+
+    def set_statusbar_connect_status(self, tooltip):    # 设置状态栏连接状态说明
+        self.statusbar.connect_status.setToolTip(tooltip)
+        self.statusbar.connect_status.setText(tooltip)
+
+    def set_tray_icon_tooltip(self, tooltip, icon=None):    # 设置托盘图标和托盘图标提示
+        self.tray_icon.setToolTip(tooltip)
+        if icon:
+            self.tray_icon.setIcon(icon)
+
+    def load_room_avatar(self, roomid):    # 加载已存在的直播间头像
+        avatar_path = os.path.join(self.owner_avatar_path, 'avatar_' + roomid)
+        if os.path.exists(avatar_path):
+            return QIcon(avatar_path)
+        else:
+            return self.default_icon
         
+    def open_room_event(self):    # 打开直播间
+        webbrowser.open(self.douyu_url + self.room_id)
+
+    def load_gift_dict(self):    # 从文件中加载直播间礼物ID与对应的名称
+        try:
+            with open(self.gift_dict_file_path, 'r') as gift_file:
+                gift_list = gift_file.readlines()
+            gift_dict = {}
+            for each_gift in gift_list:
+                each_gift = each_gift.replace('\n', '')
+                (gift_id, gift_name) = each_gift.split(':')
+                gift_dict[gift_id] = gift_name
+            return gift_dict
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            return {}
+
+    def save_gift_dict(self, gift_dict):    # 保存直播间礼物ID与对应的名称到文件
+        try:
+            gift_list = []
+            for gift_id in gift_dict:
+                gift_list.append('%s:%s\n' % (gift_id, gift_dict[gift_id]))
+            with open(self.gift_dict_file_path, 'w') as gift_file:
+                gift_file.writelines(gift_list)
+        except Exception as exc:
+            exc_msg = exception_message(exc)
+            ERROR_LOGGER.error(exc_msg)
+            
     # 顶栏组件相关事件处理器
     def roomid_changed_event(self):    # 直播间号输入框的事件处理器，文本一改变就触发
         rid_enter = self.topbar_widget.roomid_enter.text()
@@ -1211,13 +1267,14 @@ class MainWindow(MainWindowUi):
                     self.topbar_widget.set_owner_avatar(avatar_pixmap)
                     self.room_icon = QIcon(data_recv['data']['avatar'])
                 # 显示各种直播间信息
-                self.topbar_widget.set_room_details(data_recv['data']['room_name'],
-                                                    data_recv['data']['cate_name'],
-                                                    data_recv['data']['room_status'],
-                                                    data_recv['data']['owner_name'],
-                                                    data_recv['data']['hn'],
-                                                    data_recv['data']['fans_num'],                                                    
-                                                    data_recv['data']['start_time'])
+                self.topbar_widget.set_room_details(
+                    data_recv['data']['room_name'],
+                    data_recv['data']['cate_name'],
+                    data_recv['data']['room_status'],
+                    data_recv['data']['owner_name'],
+                    data_recv['data']['hn'],
+                    data_recv['data']['fans_num'],                                                    
+                    data_recv['data']['start_time'])
 
                 self.room_owner = data_recv['data']['owner_name']
                 tooltip = (
@@ -1229,12 +1286,11 @@ class MainWindow(MainWindowUi):
                     u'热度：' + data_recv['data']['hn'] + '\n' +
                     u'关注：' + data_recv['data']['fans_num'] + '\n' +
                     u'最近开播时间：' + data_recv['data']['start_time'])
-                if self.can_refresh_details:
-                    self.tray_icon.setIcon(self.room_icon)
-                    self.tray_icon.setToolTip(tooltip)    # 设置托盘图标说明文字
-                    status_str = u'直播间信息更新正常' + time_short
-                    self.statusbar.get_html_status.setToolTip(status_str)
-                    self.statusbar.get_html_status.setText(status_str)    # 更新状态栏
+                if self.can_refresh_tray_details:    # 更新托盘图标说明文字
+                    self.set_tray_icon_tooltip(tooltip, self.room_icon)
+                status_str = u'直播间信息更新正常' + time_short
+                self.statusbar.get_html_status.setToolTip(status_str)
+                self.statusbar.get_html_status.setText(status_str)    # 更新状态栏
                 self.room_gift.update(data_recv['data']['gift'])    # 更新礼物名称字典
                 if self.room_gift != self.gift_dict_saved:
                     self.gift_dict_saved = {}
@@ -1251,35 +1307,6 @@ class MainWindow(MainWindowUi):
                             msg_remind = time_str + '\n' + data_recv['data']['room_name']
                             self.show_title_remind(msg_remind, data_recv['data']['room_id'])
                     self.last_title = data_recv['data']['room_name']    # 保存标题
-
-    def open_room_event(self):    # 打开直播间
-        webbrowser.open(self.douyu_url + self.room_id)
-
-    def load_gift_dict(self):    # 从文件中加载直播间礼物ID与对应的名称
-        try:
-            with open(self.gift_dict_file_path, 'r') as gift_file:
-                gift_list = gift_file.readlines()
-            gift_dict = {}
-            for each_gift in gift_list:
-                each_gift = each_gift.replace('\n', '')
-                (gift_id, gift_name) = each_gift.split(':')
-                gift_dict[gift_id] = gift_name
-            return gift_dict
-        except Exception as exc:
-            exc_msg = exception_message(exc)
-            ERROR_LOGGER.error(exc_msg)
-            return {}
-
-    def save_gift_dict(self, gift_dict):    # 保存直播间礼物ID与对应的名称到文件
-        try:
-            gift_list = []
-            for gift_id in gift_dict:
-                gift_list.append('%s:%s\n' % (gift_id, gift_dict[gift_id]))
-            with open(self.gift_dict_file_path, 'w') as gift_file:
-                gift_file.writelines(gift_list)
-        except Exception as exc:
-            exc_msg = exception_message(exc)
-            ERROR_LOGGER.error(exc_msg)
 
     # 弹幕窗体相关事件处理器
     def clear_danmu_event(self):    # 弹幕消息框的清屏处理器
